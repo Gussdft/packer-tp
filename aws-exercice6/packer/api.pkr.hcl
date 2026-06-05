@@ -49,7 +49,7 @@ build {
 
   # Créer le dossier /app sur AWS avant la copie
   provisioner "shell" {
-    only = ["amazon-ebs.ubuntu"]
+    only   = ["amazon-ebs.ubuntu"]
     inline = ["sudo mkdir -p /app && sudo chmod 777 /app"]
   }
 
