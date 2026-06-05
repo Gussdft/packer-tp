@@ -1,0 +1,182 @@
+name: CI/CD Packer + Terraform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  PACKER_DIR: aws-exercice6/packer
+  TERRAFORM_DIR: aws-exercice6/terraform
+
+jobs:
+  # ────────────────────────────────────────────
+  # Job 1 : Tester l'application Node.js
+  # ────────────────────────────────────────────
+  test-app:
+    name: Test Application
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install dependencies
+        working-directory: aws-exercice6/packer/app
+        run: npm install
+
+      - name: Test API route
+        working-directory: aws-exercice6/packer/app
+        run: |
+          node src/index.js &
+          sleep 3
+          curl -f http://localhost:3000/auth/secret-mysecretphrase && echo "API OK"
+          kill %1
+
+  # ────────────────────────────────────────────
+  # Job 2 : Valider la configuration Packer
+  # ────────────────────────────────────────────
+  validate-packer:
+    name: Validate Packer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: latest
+
+      - name: Packer Init
+        working-directory: ${{ env.PACKER_DIR }}
+        run: packer init .
+
+      - name: Packer Format Check
+        working-directory: ${{ env.PACKER_DIR }}
+        run: packer fmt -check .
+
+      - name: Packer Validate
+        working-directory: ${{ env.PACKER_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: packer validate .
+
+  # ────────────────────────────────────────────
+  # Job 3 : Valider la configuration Terraform
+  # ────────────────────────────────────────────
+  validate-terraform:
+    name: Validate Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+
+      - name: Terraform Init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: terraform init
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform fmt -check
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: terraform plan -var ami_id=ami-00000000000000000
+
+  # ────────────────────────────────────────────
+  # Job 4 : Build Packer (AMI + Docker)
+  # ────────────────────────────────────────────
+  build:
+    name: Packer Build
+    runs-on: ubuntu-latest
+    needs: [test-app, validate-packer]
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      ami_id: ${{ steps.get-ami.outputs.ami_id }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: latest
+
+      - name: Packer Init
+        working-directory: ${{ env.PACKER_DIR }}
+        run: packer init .
+
+      - name: Packer Build
+        working-directory: ${{ env.PACKER_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: packer build api.pkr.hcl
+
+      - name: Get AMI ID from manifest
+        id: get-ami
+        working-directory: ${{ env.PACKER_DIR }}
+        run: |
+          AMI_ID=$(jq -r '.builds[-1].artifact_id' manifest.json | cut -d':' -f2)
+          echo "ami_id=$AMI_ID" >> $GITHUB_OUTPUT
+          echo "AMI ID: $AMI_ID"
+
+  # ────────────────────────────────────────────
+  # Job 5 : Déploiement Terraform
+  # ────────────────────────────────────────────
+  deploy:
+    name: Terraform Deploy
+    runs-on: ubuntu-latest
+    needs: [build, validate-terraform]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: latest
+
+      - name: Terraform Init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: terraform apply -auto-approve -var ami_id=${{ needs.build.outputs.ami_id }}

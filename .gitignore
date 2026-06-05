@@ -1,0 +1,19 @@
+# Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+**/.terraform.lock.hcl
+**/.terraform.tfstate.lock.info
+
+# Packer
+**/manifest.json
+**/.packer_cache/
+
+# Claude
+.claude/
+
+# Node
+**/node_modules/
+
+# OS
+.DS_Store
